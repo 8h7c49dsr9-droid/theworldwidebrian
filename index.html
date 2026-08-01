@@ -67,7 +67,7 @@
 
   /* ---------- Viewer ---------- */
   #viewer {
-    flex: 1; position: relative; overflow: hidden; background: #0e0c0a;
+    flex: 1; position: relative; overflow: hidden; background: #f4f1e9;
     touch-action: none; display: none;
   }
   #viewer.show { display: block; }
@@ -82,7 +82,7 @@
 
   #loadingMsg {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    color: var(--ink-dim); font-size: 14px; z-index: 5; pointer-events: none;
+    color: #7a7263; font-size: 14px; z-index: 5; pointer-events: none;
   }
 
   /* ---------- Bottom stamp bar ---------- */
@@ -148,6 +148,7 @@
     <button class="icon-btn" id="btnChangeFolder" title="Choose a different folder">📁</button>
     <span id="titleLabel">Strip Reader</span>
     <div>
+      <button class="icon-btn" id="btnFrameMode" title="Frame by frame">🎞</button>
       <button class="icon-btn" id="btnBookmark" title="Bookmark this page">☆</button>
       <button class="icon-btn" id="btnDrawer" title="Bookmarks">☰</button>
     </div>
@@ -190,12 +191,18 @@
   let urlCache = new Map();    // index -> objectURL
   const URL_WINDOW = 3;        // keep this many pages on each side alive
 
-  let baseScaleFitHeight = 1;
   let baseScaleFitWidth = 1;
+  let baseScaleDetail = 1;
   let scale = 1, minScale = 1, maxScale = 1;
   let tx = 0, ty = 0;
-  let zoomMode = "fit-height";
+  let zoomMode = "detail"; // "detail" (default, ~3 of 4 panels) or "overview" (whole strip)
   let naturalW = 0, naturalH = 0;
+  let userZoomMultiplier = 1; // remembers pinch adjustments across pages
+
+  let frameMode = false;
+  const FRAME_COUNT = 4; // dailies are consistently 4 panels; adjust if Sundays need a different count
+  let frameIndex = 0;
+  let pendingFrameIndex = null; // set when navigating backward into a new page while in frame mode
 
   let bookmarks = [];
 
@@ -211,6 +218,7 @@
   const loadingMsg = document.getElementById("loadingMsg");
   const stampDate = document.getElementById("stampDate");
   const stampCount = document.getElementById("stampCount");
+  const btnFrameMode = document.getElementById("btnFrameMode");
   const btnBookmark = document.getElementById("btnBookmark");
   const btnDrawer = document.getElementById("btnDrawer");
   const btnCloseDrawer = document.getElementById("btnCloseDrawer");
@@ -238,6 +246,17 @@
   }
   function saveLastPosition(relPath) {
     try { localStorage.setItem("dbury-last-position", relPath); }
+    catch (e) { /* non-fatal */ }
+  }
+  function loadZoomMultiplier() {
+    try {
+      const raw = localStorage.getItem("dbury-zoom-multiplier");
+      const val = raw ? parseFloat(raw) : 1;
+      return isFinite(val) && val > 0 ? val : 1;
+    } catch (e) { return 1; }
+  }
+  function saveZoomMultiplier() {
+    try { localStorage.setItem("dbury-zoom-multiplier", String(userZoomMultiplier)); }
     catch (e) { /* non-fatal */ }
   }
 
@@ -284,6 +303,7 @@
       : `Loaded ${files.length} strips.`;
 
     await loadBookmarks();
+    userZoomMultiplier = loadZoomMultiplier();
     const lastPath = await loadLastPosition();
     let startIndex = 0;
     if (lastPath) {
@@ -356,7 +376,13 @@
       naturalW = pageImg.naturalWidth;
       naturalH = pageImg.naturalHeight;
       computeScales();
-      setZoomMode(zoomMode, immediate);
+      if (frameMode) {
+        frameIndex = pendingFrameIndex !== null ? pendingFrameIndex : 0;
+        pendingFrameIndex = null;
+        layoutFrame(immediate);
+      } else {
+        setZoomMode(zoomMode, immediate);
+      }
     };
     pageImg.onerror = () => {
       loadingMsg.textContent = `Couldn't decode "${entry.name}" as an image.`;
@@ -378,10 +404,10 @@
   function computeScales() {
     const { w, h } = viewerSize();
     if (!naturalW || !naturalH) return;
-    baseScaleFitHeight = h / naturalH;
     baseScaleFitWidth = w / naturalW;
-    minScale = Math.min(baseScaleFitHeight, baseScaleFitWidth) * 0.9;
-    maxScale = baseScaleFitHeight * 4;
+    baseScaleDetail = baseScaleFitWidth * 1.35; // ~74% of strip width visible ≈ 3 of 4 panels
+    minScale = baseScaleFitWidth * 0.95;
+    maxScale = baseScaleDetail * 3;
   }
 
   function clampPan() {
@@ -402,7 +428,9 @@
 
   function setZoomMode(mode, immediate) {
     zoomMode = mode;
-    scale = mode === "fit-width" ? baseScaleFitWidth : baseScaleFitHeight;
+    scale = mode === "overview"
+      ? baseScaleFitWidth
+      : Math.max(minScale, Math.min(maxScale, baseScaleDetail * userZoomMultiplier));
     tx = 0;
     ty = 0;
     clampPan();
@@ -411,10 +439,62 @@
   }
 
   function toggleZoomMode() {
-    setZoomMode(zoomMode === "fit-height" ? "fit-width" : "fit-height");
+    setZoomMode(zoomMode === "detail" ? "overview" : "detail");
   }
 
-  window.addEventListener("resize", () => { computeScales(); clampPan(); applyTransform(); });
+  // ---------------- Frame-by-frame mode ----------------
+  function layoutFrame(immediate) {
+    const { w, h } = viewerSize();
+    if (!naturalW || !naturalH) return;
+    const sliceW = naturalW / FRAME_COUNT;
+    scale = w / sliceW;
+    tx = -(frameIndex * sliceW * scale);
+    const imgH = naturalH * scale;
+    ty = (h - imgH) / 2;
+    if (!immediate) stage.classList.add("settling");
+    applyTransform();
+  }
+
+  function enterFrameMode() {
+    frameMode = true;
+    frameIndex = 0;
+    btnFrameMode.classList.add("active");
+    layoutFrame(false);
+  }
+
+  function exitFrameMode() {
+    frameMode = false;
+    btnFrameMode.classList.remove("active");
+    setZoomMode(zoomMode, false);
+  }
+
+  function toggleFrameMode() {
+    if (frameMode) exitFrameMode(); else enterFrameMode();
+  }
+  btnFrameMode.addEventListener("click", toggleFrameMode);
+
+  function nextFrame() {
+    if (frameIndex < FRAME_COUNT - 1) {
+      frameIndex++;
+      layoutFrame(false);
+    } else {
+      goToIndex(currentIndex + 1);
+    }
+  }
+  function prevFrame() {
+    if (frameIndex > 0) {
+      frameIndex--;
+      layoutFrame(false);
+    } else {
+      pendingFrameIndex = FRAME_COUNT - 1;
+      goToIndex(currentIndex - 1);
+    }
+  }
+
+  window.addEventListener("resize", () => {
+    computeScales();
+    if (frameMode) layoutFrame(true); else { clampPan(); applyTransform(); }
+  });
 
   // ---------------- Pointer gestures ----------------
   let pointers = new Map();
@@ -447,6 +527,7 @@
   viewer.addEventListener("pointermove", (e) => {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (frameMode) return; // frame mode only responds to taps, not drag/pinch
 
     if (pointers.size === 2) {
       const pts = Array.from(pointers.values());
@@ -479,19 +560,28 @@
     const tapCandidate = wasLastPointer && !dragMoved && !gestureIsPinch;
     const rect = viewer.getBoundingClientRect();
     const xFrac = (e.clientX - rect.left) / rect.width;
+    const pinchEnding = gestureIsPinch;
 
     pointers.delete(e.pointerId);
     if (pointers.size === 0) {
+      if (pinchEnding && !frameMode && zoomMode === "detail") {
+        userZoomMultiplier = Math.max(0.3, Math.min(3, scale / baseScaleDetail));
+        saveZoomMultiplier();
+      }
       dragStart = null; gestureIsPinch = false; cachedRect = null;
       stage.classList.add("settling");
-      clampPan();
-      applyTransform();
+      if (!frameMode) { clampPan(); applyTransform(); }
     }
 
     if (tapCandidate) {
-      if (xFrac < 0.15) goToIndex(currentIndex - 1);
-      else if (xFrac > 0.85) goToIndex(currentIndex + 1);
-      else toggleZoomMode();
+      if (frameMode) {
+        if (xFrac < 0.15) prevFrame();
+        else if (xFrac > 0.85) nextFrame();
+      } else {
+        if (xFrac < 0.15) goToIndex(currentIndex - 1);
+        else if (xFrac > 0.85) goToIndex(currentIndex + 1);
+        else toggleZoomMode();
+      }
     }
   }
   viewer.addEventListener("pointerup", onPointerUp);
@@ -503,9 +593,10 @@
   // ---------------- Keyboard (Mac testing) ----------------
   window.addEventListener("keydown", (e) => {
     if (chooser.style.display !== "none") return;
-    if (e.key === "ArrowRight") goToIndex(currentIndex + 1);
-    else if (e.key === "ArrowLeft") goToIndex(currentIndex - 1);
-    else if (e.key === " ") { e.preventDefault(); toggleZoomMode(); }
+    if (e.key === "ArrowRight") { frameMode ? nextFrame() : goToIndex(currentIndex + 1); }
+    else if (e.key === "ArrowLeft") { frameMode ? prevFrame() : goToIndex(currentIndex - 1); }
+    else if (e.key === " ") { e.preventDefault(); if (!frameMode) toggleZoomMode(); }
+    else if (e.key.toLowerCase() === "f") toggleFrameMode();
     else if (e.key.toLowerCase() === "b") toggleBookmark();
   });
 
@@ -576,7 +667,7 @@
   function maybeShowHelp() {
     const toast = document.createElement("div");
     toast.id = "helpToast";
-    toast.textContent = "Drag to see the last panel. Tap center to see the whole strip. Tap the edges to turn pages.";
+    toast.textContent = "Drag to see the last panel, tap center for the whole strip, tap the edges to turn pages. Tap 🎞 for one panel at a time.";
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 4500);
   }
