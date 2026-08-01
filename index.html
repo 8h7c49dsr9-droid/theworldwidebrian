@@ -358,8 +358,20 @@
       if (Math.abs(i - currentIndex) > URL_WINDOW) urlCache.delete(i);
     }
   }
+  const decodeWarmed = new Set();
+  function warmDecode(i, url) {
+    if (decodeWarmed.has(i)) return;
+    decodeWarmed.add(i);
+    const img = new Image();
+    img.src = url;
+    if (img.decode) img.decode().catch(() => {});
+  }
   function prefetchNeighbors() {
-    for (let d = 1; d <= URL_WINDOW; d++) { getUrl(currentIndex + d); getUrl(currentIndex - d); }
+    for (let d = 1; d <= URL_WINDOW; d++) {
+      [currentIndex + d, currentIndex - d].forEach(i => {
+        getUrl(i).then(url => { if (url) warmDecode(i, url); });
+      });
+    }
   }
 
   // ---------------- Rendering / navigation ----------------
@@ -529,55 +541,67 @@
     const url = await getUrl(targetIndex);
     if (!url) { stripTransitioning = false; return; }
 
-    transitionImg.onload = () => {
-      const tW = transitionImg.naturalWidth, tH = transitionImg.naturalHeight;
-      const { w, h } = viewerSize();
-      const sliceW = tW / FRAME_COUNT;
-      const tScale = w / sliceW;
-      const targetFrameIndex = dir > 0 ? 0 : FRAME_COUNT - 1;
-      const restTx = -(targetFrameIndex * sliceW * tScale);
-      const restTy = (h - tH * tScale) / 2;
-      const offset = Math.max(w, h) * 0.9;
-      const startTx = restTx + (dir > 0 ? offset : -offset);
-      const startTy = restTy - (dir > 0 ? offset : -offset);
-
-      transitionImg.style.transition = "none";
-      transitionImg.style.opacity = "1";
-      transitionImg.style.display = "block";
-      transitionImg.style.transform = `translate3d(${startTx}px, ${startTy}px, 0) scale(${tScale})`;
-      stage.classList.remove("settling");
-      stage.style.transition = "none";
-      void stage.offsetWidth; // force reflow so the starting position is actually painted
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          stage.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-in, opacity ${STRIP_TRANSITION_MS}ms ease-in`;
-          stage.style.opacity = "0";
-          stage.style.transform = `translate3d(${tx + (dir > 0 ? -offset : offset)}px, ${ty + (dir > 0 ? offset : -offset)}px, 0) scale(${scale})`;
-          transitionImg.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-out`;
-          transitionImg.style.transform = `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})`;
-
-          setTimeout(() => {
-            currentIndex = targetIndex;
-            frameIndex = targetFrameIndex;
-            naturalW = tW; naturalH = tH;
-            pageImg.src = url;
-            computeScales();
-            scale = tScale; tx = restTx; ty = restTy;
-            stage.style.transition = "none";
-            stage.style.opacity = "1";
-            applyTransform();
-            transitionImg.style.display = "none";
-            stripTransitioning = false;
-            updateChromeFor(targetIndex);
-            prefetchNeighbors();
-            pruneUrls();
-            saveLastPosition(files[targetIndex].relPath);
-          }, STRIP_TRANSITION_MS);
-        });
-      });
-    };
     transitionImg.src = url;
+    try {
+      if (transitionImg.decode) {
+        await transitionImg.decode(); // waits for full pixel decode, not just "src set"
+      } else {
+        await new Promise((resolve, reject) => {
+          transitionImg.onload = resolve;
+          transitionImg.onerror = reject;
+        });
+      }
+    } catch (e) {
+      stripTransitioning = false;
+      return;
+    }
+
+    const tW = transitionImg.naturalWidth, tH = transitionImg.naturalHeight;
+    const { w, h } = viewerSize();
+    const sliceW = tW / FRAME_COUNT;
+    const tScale = w / sliceW;
+    const targetFrameIndex = dir > 0 ? 0 : FRAME_COUNT - 1;
+    const restTx = -(targetFrameIndex * sliceW * tScale);
+    const restTy = (h - tH * tScale) / 2;
+    const offset = Math.max(w, h) * 0.9;
+    const startTx = restTx + (dir > 0 ? offset : -offset);
+    const startTy = restTy - (dir > 0 ? offset : -offset);
+
+    transitionImg.style.transition = "none";
+    transitionImg.style.opacity = "1";
+    transitionImg.style.display = "block";
+    transitionImg.style.transform = `translate3d(${startTx}px, ${startTy}px, 0) scale(${tScale})`;
+    stage.classList.remove("settling");
+    stage.style.transition = "none";
+    void stage.offsetWidth; // force reflow so the starting position is actually painted
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        stage.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-in, opacity ${STRIP_TRANSITION_MS}ms ease-in`;
+        stage.style.opacity = "0";
+        stage.style.transform = `translate3d(${tx + (dir > 0 ? -offset : offset)}px, ${ty + (dir > 0 ? offset : -offset)}px, 0) scale(${scale})`;
+        transitionImg.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-out`;
+        transitionImg.style.transform = `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})`;
+
+        setTimeout(() => {
+          currentIndex = targetIndex;
+          frameIndex = targetFrameIndex;
+          naturalW = tW; naturalH = tH;
+          pageImg.src = url;
+          computeScales();
+          scale = tScale; tx = restTx; ty = restTy;
+          stage.style.transition = "none";
+          stage.style.opacity = "1";
+          applyTransform();
+          transitionImg.style.display = "none";
+          stripTransitioning = false;
+          updateChromeFor(targetIndex);
+          prefetchNeighbors();
+          pruneUrls();
+          saveLastPosition(files[targetIndex].relPath);
+        }, STRIP_TRANSITION_MS);
+      });
+    });
   }
 
   window.addEventListener("resize", () => {
