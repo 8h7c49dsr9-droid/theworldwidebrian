@@ -418,7 +418,7 @@
     const { w, h } = viewerSize();
     if (!naturalW || !naturalH) return;
     baseScaleFitWidth = w / naturalW;
-    baseScaleDetail = baseScaleFitWidth * 1.2; // ~83% of strip width visible ≈ just over 3 of 4 panels
+    baseScaleDetail = baseScaleFitWidth * (FRAME_COUNT / (FRAME_COUNT - 1)); // exactly 3 of 4 panels, split at the gap
     minScale = baseScaleFitWidth * 0.85;
     maxScale = baseScaleDetail * 2.2;
   }
@@ -547,34 +547,35 @@
       transitionImg.style.transform = `translate3d(${startTx}px, ${startTy}px, 0) scale(${tScale})`;
       stage.classList.remove("settling");
       stage.style.transition = "none";
-      void stage.offsetWidth; // force reflow before animating
+      void stage.offsetWidth; // force reflow so the starting position is actually painted
 
       requestAnimationFrame(() => {
-        stage.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-in, opacity ${STRIP_TRANSITION_MS}ms ease-in`;
-        stage.style.opacity = "0";
-        stage.style.transform = `translate3d(${tx + (dir > 0 ? -offset : offset)}px, ${ty + (dir > 0 ? offset : -offset)}px, 0) scale(${scale})`;
-        transitionImg.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-out`;
-        void transitionImg.offsetWidth;
-        transitionImg.style.transform = `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})`;
-      });
+        requestAnimationFrame(() => {
+          stage.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-in, opacity ${STRIP_TRANSITION_MS}ms ease-in`;
+          stage.style.opacity = "0";
+          stage.style.transform = `translate3d(${tx + (dir > 0 ? -offset : offset)}px, ${ty + (dir > 0 ? offset : -offset)}px, 0) scale(${scale})`;
+          transitionImg.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-out`;
+          transitionImg.style.transform = `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})`;
 
-      setTimeout(() => {
-        currentIndex = targetIndex;
-        frameIndex = targetFrameIndex;
-        naturalW = tW; naturalH = tH;
-        pageImg.src = url;
-        computeScales();
-        scale = tScale; tx = restTx; ty = restTy;
-        stage.style.transition = "none";
-        stage.style.opacity = "1";
-        applyTransform();
-        transitionImg.style.display = "none";
-        stripTransitioning = false;
-        updateChromeFor(targetIndex);
-        prefetchNeighbors();
-        pruneUrls();
-        saveLastPosition(files[targetIndex].relPath);
-      }, STRIP_TRANSITION_MS);
+          setTimeout(() => {
+            currentIndex = targetIndex;
+            frameIndex = targetFrameIndex;
+            naturalW = tW; naturalH = tH;
+            pageImg.src = url;
+            computeScales();
+            scale = tScale; tx = restTx; ty = restTy;
+            stage.style.transition = "none";
+            stage.style.opacity = "1";
+            applyTransform();
+            transitionImg.style.display = "none";
+            stripTransitioning = false;
+            updateChromeFor(targetIndex);
+            prefetchNeighbors();
+            pruneUrls();
+            saveLastPosition(files[targetIndex].relPath);
+          }, STRIP_TRANSITION_MS);
+        });
+      });
     };
     transitionImg.src = url;
   }
