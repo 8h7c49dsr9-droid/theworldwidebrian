@@ -267,6 +267,14 @@
     try { localStorage.setItem("dbury-zoom-multiplier", String(userZoomMultiplier)); }
     catch (e) { /* non-fatal */ }
   }
+  function loadFrameModePref() {
+    try { return localStorage.getItem("dbury-frame-mode") === "1"; }
+    catch (e) { return false; }
+  }
+  function saveFrameModePref(on) {
+    try { localStorage.setItem("dbury-frame-mode", on ? "1" : "0"); }
+    catch (e) { /* non-fatal */ }
+  }
 
   // ---------------- Filename date parsing ----------------
   // Matches patterns like db701026 -> Oct 26, 1970
@@ -312,6 +320,7 @@
 
     await loadBookmarks();
     userZoomMultiplier = loadZoomMultiplier();
+    const wantsFrameMode = loadFrameModePref();
     const lastPath = await loadLastPosition();
     let startIndex = 0;
     if (lastPath) {
@@ -324,6 +333,11 @@
     viewer.classList.add("show");
     stampbar.classList.add("show");
 
+    if (wantsFrameMode) {
+      frameMode = true;
+      frameIndex = 0;
+      btnFrameMode.classList.add("active");
+    }
     goToIndex(startIndex, true);
     maybeShowHelp();
   });
@@ -484,12 +498,14 @@
     frameMode = true;
     frameIndex = 0;
     btnFrameMode.classList.add("active");
+    saveFrameModePref(true);
     layoutFrame(false);
   }
 
   function exitFrameMode() {
     frameMode = false;
     btnFrameMode.classList.remove("active");
+    saveFrameModePref(false);
     setZoomMode(zoomMode, false);
   }
 
@@ -509,6 +525,7 @@
   // moving past panel 4 (or before panel 1) triggers the diagonal strip transition.
   let stripTransitioning = false;
   const STRIP_TRANSITION_MS = 450;
+  const STRIP_SWIPE_MIN = 90; // deliberately stricter than normal panel stepping
 
   function frameTapRight() {
     if (stripTransitioning) return;
@@ -522,10 +539,10 @@
     else if (frameIndex === 0) { triggerStripTransition(-1); }
     // at the last panel, a tap does nothing — that step needs an upward swipe
   }
-  function frameSwipeDown() {
+  function frameSwipeDown(dy) {
     if (stripTransitioning) return;
     if (frameIndex === FRAME_COUNT - 2) { frameIndex = FRAME_COUNT - 1; layoutFrame(false); }
-    else if (frameIndex === FRAME_COUNT - 1) { triggerStripTransition(1); }
+    else if (frameIndex === FRAME_COUNT - 1 && Math.abs(dy) > STRIP_SWIPE_MIN) { triggerStripTransition(1); }
   }
   function frameSwipeUp() {
     if (stripTransitioning) return;
@@ -566,42 +583,50 @@
     const offset = Math.max(w, h) * 0.9;
     const startTx = restTx + (dir > 0 ? offset : -offset);
     const startTy = restTy - (dir > 0 ? offset : -offset);
+    const outStartTx = tx, outStartTy = ty, outStartScale = scale;
+    const outEndTx = tx + (dir > 0 ? -offset : offset);
+    const outEndTy = ty + (dir > 0 ? offset : -offset);
 
+    stage.classList.remove("settling");
+    stage.style.transition = "none";
     transitionImg.style.transition = "none";
     transitionImg.style.opacity = "1";
     transitionImg.style.display = "block";
     transitionImg.style.transform = `translate3d(${startTx}px, ${startTy}px, 0) scale(${tScale})`;
-    stage.classList.remove("settling");
+
+    const canAnimate = typeof stage.animate === "function";
+    let finished;
+    if (canAnimate) {
+      const outAnim = stage.animate([
+        { transform: `translate3d(${outStartTx}px, ${outStartTy}px, 0) scale(${outStartScale})`, opacity: 1 },
+        { transform: `translate3d(${outEndTx}px, ${outEndTy}px, 0) scale(${outStartScale})`, opacity: 0 }
+      ], { duration: STRIP_TRANSITION_MS, easing: "ease-in", fill: "forwards" });
+      const inAnim = transitionImg.animate([
+        { transform: `translate3d(${startTx}px, ${startTy}px, 0) scale(${tScale})` },
+        { transform: `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})` }
+      ], { duration: STRIP_TRANSITION_MS, easing: "ease-out", fill: "forwards" });
+      finished = Promise.all([outAnim.finished, inAnim.finished]).catch(() => {});
+    } else {
+      finished = new Promise(resolve => setTimeout(resolve, STRIP_TRANSITION_MS));
+    }
+
+    await finished;
+    currentIndex = targetIndex;
+    frameIndex = targetFrameIndex;
+    naturalW = tW; naturalH = tH;
+    pageImg.src = url;
+    computeScales();
+    scale = tScale; tx = restTx; ty = restTy;
+    stage.getAnimations && stage.getAnimations().forEach(a => a.cancel());
     stage.style.transition = "none";
-    void stage.offsetWidth; // force reflow so the starting position is actually painted
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        stage.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-in, opacity ${STRIP_TRANSITION_MS}ms ease-in`;
-        stage.style.opacity = "0";
-        stage.style.transform = `translate3d(${tx + (dir > 0 ? -offset : offset)}px, ${ty + (dir > 0 ? offset : -offset)}px, 0) scale(${scale})`;
-        transitionImg.style.transition = `transform ${STRIP_TRANSITION_MS}ms ease-out`;
-        transitionImg.style.transform = `translate3d(${restTx}px, ${restTy}px, 0) scale(${tScale})`;
-
-        setTimeout(() => {
-          currentIndex = targetIndex;
-          frameIndex = targetFrameIndex;
-          naturalW = tW; naturalH = tH;
-          pageImg.src = url;
-          computeScales();
-          scale = tScale; tx = restTx; ty = restTy;
-          stage.style.transition = "none";
-          stage.style.opacity = "1";
-          applyTransform();
-          transitionImg.style.display = "none";
-          stripTransitioning = false;
-          updateChromeFor(targetIndex);
-          prefetchNeighbors();
-          pruneUrls();
-          saveLastPosition(files[targetIndex].relPath);
-        }, STRIP_TRANSITION_MS);
-      });
-    });
+    stage.style.opacity = "1";
+    applyTransform();
+    transitionImg.style.display = "none";
+    stripTransitioning = false;
+    updateChromeFor(targetIndex);
+    prefetchNeighbors();
+    pruneUrls();
+    saveLastPosition(files[targetIndex].relPath);
   }
 
   window.addEventListener("resize", () => {
@@ -712,7 +737,7 @@
     } else if (frameSwipe) {
       const SWIPE_MIN = 30;
       if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > SWIPE_MIN) {
-        if (dy > 0) frameSwipeDown(); else frameSwipeUp();
+        if (dy > 0) frameSwipeDown(dy); else frameSwipeUp();
       } else if (Math.abs(dx) > SWIPE_MIN) {
         if (dx < 0) frameTapRight(); else frameTapLeft();
       }
