@@ -149,6 +149,7 @@
     <span id="titleLabel">Strip Reader</span>
     <div>
       <button class="icon-btn" id="btnFrameMode" title="Frame by frame">🎞</button>
+      <button class="icon-btn" id="btnResetZoom" title="Reset zoom">↺</button>
       <button class="icon-btn" id="btnBookmark" title="Bookmark this page">☆</button>
       <button class="icon-btn" id="btnDrawer" title="Bookmarks">☰</button>
     </div>
@@ -219,6 +220,7 @@
   const stampDate = document.getElementById("stampDate");
   const stampCount = document.getElementById("stampCount");
   const btnFrameMode = document.getElementById("btnFrameMode");
+  const btnResetZoom = document.getElementById("btnResetZoom");
   const btnBookmark = document.getElementById("btnBookmark");
   const btnDrawer = document.getElementById("btnDrawer");
   const btnCloseDrawer = document.getElementById("btnCloseDrawer");
@@ -405,9 +407,9 @@
     const { w, h } = viewerSize();
     if (!naturalW || !naturalH) return;
     baseScaleFitWidth = w / naturalW;
-    baseScaleDetail = baseScaleFitWidth * 1.35; // ~74% of strip width visible ≈ 3 of 4 panels
-    minScale = baseScaleFitWidth * 0.95;
-    maxScale = baseScaleDetail * 3;
+    baseScaleDetail = baseScaleFitWidth * 1.2; // ~83% of strip width visible ≈ just over 3 of 4 panels
+    minScale = baseScaleFitWidth * 0.85;
+    maxScale = baseScaleDetail * 2.2;
   }
 
   function clampPan() {
@@ -473,6 +475,12 @@
   }
   btnFrameMode.addEventListener("click", toggleFrameMode);
 
+  btnResetZoom.addEventListener("click", () => {
+    userZoomMultiplier = 1;
+    saveZoomMultiplier();
+    if (!frameMode) setZoomMode("detail", false);
+  });
+
   function nextFrame() {
     if (frameIndex < FRAME_COUNT - 1) {
       frameIndex++;
@@ -506,6 +514,8 @@
 
   let gestureIsPinch = false;
   let rafPending = false;
+  let lastOverscroll = 0;
+  const OVERSCROLL_THRESHOLD = 55;
 
   viewer.addEventListener("pointerdown", (e) => {
     viewer.setPointerCapture(e.pointerId);
@@ -516,6 +526,7 @@
       dragStart = { x: e.clientX, y: e.clientY, tx, ty };
       dragMoved = false;
       gestureIsPinch = false;
+      lastOverscroll = 0;
     } else if (pointers.size === 2) {
       gestureIsPinch = true;
       const pts = Array.from(pointers.values());
@@ -539,7 +550,12 @@
     } else if (pointers.size === 1 && dragStart) {
       const dx = e.clientX - dragStart.x, dy = e.clientY - dragStart.y;
       if (Math.hypot(dx, dy) > 6) dragMoved = true;
-      tx = dragStart.tx + dx;
+      const rawTx = dragStart.tx + dx;
+      const { w } = viewerSize();
+      const imgW = naturalW * scale;
+      const minTx = Math.min(0, w - imgW);
+      lastOverscroll = rawTx > 0 ? rawTx : (rawTx < minTx ? rawTx - minTx : 0);
+      tx = rawTx;
       ty = dragStart.ty + dy;
       scheduleTransform();
     }
@@ -558,22 +574,28 @@
   function onPointerUp(e) {
     const wasLastPointer = pointers.size === 1;
     const tapCandidate = wasLastPointer && !dragMoved && !gestureIsPinch;
+    const swipeCandidate = wasLastPointer && dragMoved && !gestureIsPinch && !frameMode
+      && Math.abs(lastOverscroll) > OVERSCROLL_THRESHOLD;
     const rect = viewer.getBoundingClientRect();
     const xFrac = (e.clientX - rect.left) / rect.width;
     const pinchEnding = gestureIsPinch;
+    const swipeDirection = lastOverscroll < 0 ? 1 : -1; // dragged left past edge -> next page
 
     pointers.delete(e.pointerId);
     if (pointers.size === 0) {
       if (pinchEnding && !frameMode && zoomMode === "detail") {
-        userZoomMultiplier = Math.max(0.3, Math.min(3, scale / baseScaleDetail));
+        userZoomMultiplier = Math.max(0.3, Math.min(2.2, scale / baseScaleDetail));
         saveZoomMultiplier();
       }
       dragStart = null; gestureIsPinch = false; cachedRect = null;
+      lastOverscroll = 0;
       stage.classList.add("settling");
-      if (!frameMode) { clampPan(); applyTransform(); }
+      if (!frameMode && !swipeCandidate) { clampPan(); applyTransform(); }
     }
 
-    if (tapCandidate) {
+    if (swipeCandidate) {
+      goToIndex(currentIndex + swipeDirection);
+    } else if (tapCandidate) {
       if (frameMode) {
         if (xFrac < 0.15) prevFrame();
         else if (xFrac > 0.85) nextFrame();
